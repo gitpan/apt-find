@@ -1,0 +1,187 @@
+#!/usr/bin/perl
+use strict;
+use LWP::UserAgent;
+use HTML::Form;
+use HTML::Parser;
+use Getopt::Long;
+
+use vars qw( $VERSION %CONF );
+
+$VERSION = '0.01';
+
+my $base = 'http://www.apt-get.org/search.php';
+
+my $ua = LWP::UserAgent->new( agent => "apt-find/$VERSION", env_proxy => 1 );
+my $res = $ua->request( HTTP::Request->new( GET => $base ));
+
+my $form = ( HTML::Form->parse( $res->content, $base ) )[0];
+
+# 
+my %inputs = map {
+    ref eq 'HTML::Form::ListInput' ? ( ( $_->possible_values )[1], $_ ) : ()
+} $form->inputs;
+
+# create the command-line options from the HTML form
+Getopt::Long::Configure(qw( no_auto_abbrev ));
+GetOptions( \%CONF, "verbose|v+", map { "$_+" } keys %inputs )
+  or die "Usage: apt-org [options] query\nValid options:\n@{[keys %inputs]}\n";
+
+# make up the search request
+$form->value( query => shift );
+for my $input
+  ( grep { defined $_->name && $_->name eq 'arch[]' } $form->inputs ) {
+    my $value = ( grep { defined } $input->possible_values )[0];
+    $input->value( $CONF{$value} ? $value : undef );
+}
+
+# fetch the data
+$res = $ua->request( $form->click );
+
+# FIXME error handling
+
+# bits of the parser
+my $status = '';  # current state
+my $this;         # current repository
+my %data = ();    # global data structure
+
+my $p = HTML::Parser->new();
+$p->handler( text  => \&text,  "text" );
+$p->handler( start => \&start, "tagname,attr" );
+$p->handler( end   => \&end,   "tagname" );
+$p->unbroken_text( 1 );
+
+$p->parse($res->content);
+$p->eof;
+
+# output the data
+for (keys %data) {
+    if( $CONF{verbose} ) {
+        print "# $_\n" for grep { $_ } @{$data{$_}{pkg}};
+    }
+    print "$_\n" for grep { $_ } @{$data{$_}{deb}};
+    print "\n";
+}
+
+#
+# routines used by the parser
+#
+sub text {
+    my $text = shift;
+    $text =~ y/\012\015//d;
+
+    # texte du sources.list
+    if ( $status eq 'URL' ) {
+        $this->{deb}[-1] .= $text;
+    }
+    # liste des paquetages
+    elsif ( $status eq 'PKG' ) {
+        $this->{pkg}[-1] = $text unless $text eq 'Matches:';
+    }
+}
+
+sub start {
+    my ( $tag, $args ) = @_;
+
+    # début d'un nouveau site
+    if ( $tag eq 'li' ) {
+        if ( $args->{class} eq 'verifiedsite' ) {
+            $this   = {};      # nouvelle structure vide
+            $status = 'NEW';
+        }
+        elsif ( $args->{class} eq 'packagelist' ) {
+            $this->{pkg} = [];
+            $status = 'PKG';
+        }
+    }
+
+    # les entrées du sources.list
+    elsif ( $tag eq 'span' ) {
+        if ( $args->{class} eq 'url' ) {
+            $status = 'URL';
+            push @{ $this->{deb} }, "";
+        }
+    }
+
+    # ajout du dépot dans la structure $data
+    elsif ( $tag eq 'a' ) {
+        if ( $status eq 'NEW' ) {
+            $data{ $args->{name} } = $this if ( $args->{name} );
+        }
+    }
+
+    # séparateurs texte du formulaire
+    elsif ( $tag eq 'br/' ) {
+        if ( $status eq 'URL' ) {
+            push @{ $this->{deb} }, "";
+        }
+        elsif ( $status eq 'PKG' ) {
+            push @{ $this->{pkg} }, "";
+        }
+    }
+}
+
+sub end {
+    my $tag = shift;
+
+    # end of url section
+    $status = 'NEW' if ( $tag eq 'span' and $status eq 'URL' );
+
+    # end of package section
+    $status = 'NEW' if ( $tag eq 'li' and $status eq 'PKG' );
+}
+
+__END__
+
+=head1 NAME
+
+apt-find - Ask www.apt-get.org where to find a Debian package
+
+=head1 SYNOPSIS
+
+B<apt-find> S<[ B<-v>|<B--verbose> ]> S<[ B<--arch> ]> I<query>
+
+=head1 DESCRIPTION
+
+This script gives a simple command-line interface to the search engine
+of L<http://www.apt-get.org/>. The output consist of F<sources.list>
+entries.
+
+=head2 Options
+
+The following options are supported:
+
+=over 4
+
+=item B<-v>, B<--verbose>
+
+Verbose output. Add comments before the F<sources.list> entry giving
+the list of matching package names, one by line.
+
+Example:
+
+    # libhttp-proxy-perl 0.08-1 (all)
+    # libhttp-proxy-perl 0.08-2 (all)
+    deb http://jay.bonci.com/debian/files /
+
+=item B<--I<arch>>
+
+Where I<arch> is one of the Debian architectures, as listed in the search
+form of L<http://www.apt-get.org/>.
+
+At the time of the release of this script, the list was:
+I<all>, I<alpha>, I<arm>, I<hppa>, I<hurd-i386>, I<i386>, I<ia64>, I<m68k>,
+I<mips>, I<mipsel>, I<powerpc>, I<s390>, I<sh>, I<sparc>.
+
+I<all>, I<i386> are the form default if no option is given.
+
+=back
+
+=head1 AUTHOR
+
+Copyright 2004 Philippe "BooK" Bruhat, E<lt>book@cpan.orgE<gt>.
+
+=head1 LICENCE
+
+This module is free software; you can redistribute it or modify it under
+the same terms as Perl itself.
+

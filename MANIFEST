@@ -1,0 +1,6 @@
+MANIFEST			This list of files
+Makefile.PL
+README
+apt-find
+t/01pod.t
+t/02compile.t

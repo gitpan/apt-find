@@ -1,0 +1,6 @@
+The apt-find  script gives a simple command-line interface to the
+search engine of http://www.apt-get.org/. The output consist of
+sources.list entries.
+
+I suppose I should write a WWW::Search::AptGet module instead.
+
